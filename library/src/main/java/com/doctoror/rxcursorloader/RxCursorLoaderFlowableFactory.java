@@ -19,11 +19,9 @@ import android.content.ContentResolver;
 import android.database.ContentObserver;
 import android.database.Cursor;
 import android.os.Handler;
-import android.os.HandlerThread;
 import android.os.Looper;
 import android.support.annotation.NonNull;
 import android.util.Log;
-
 import io.reactivex.BackpressureStrategy;
 import io.reactivex.Flowable;
 import io.reactivex.FlowableEmitter;
@@ -31,8 +29,8 @@ import io.reactivex.FlowableOnSubscribe;
 import io.reactivex.Scheduler;
 import io.reactivex.functions.Action;
 
-import static com.doctoror.rxcursorloader.RxCursorLoader.isDebugLoggingEnabled;
 import static com.doctoror.rxcursorloader.RxCursorLoader.TAG;
+import static com.doctoror.rxcursorloader.RxCursorLoader.isDebugLoggingEnabled;
 
 final class RxCursorLoaderFlowableFactory {
 
@@ -48,7 +46,7 @@ final class RxCursorLoaderFlowableFactory {
         }
         //noinspection ConstantConditions
         if (query == null) {
-            throw new NullPointerException("Params param must not be null");
+            throw new NullPointerException("Query param must not be null");
         }
 
         final CursorLoaderOnSubscribe onSubscribe = new CursorLoaderOnSubscribe(
@@ -57,12 +55,12 @@ final class RxCursorLoaderFlowableFactory {
         return Flowable
                 .create(onSubscribe, backpressureStrategy)
                 .subscribeOn(scheduler)
-                .doOnTerminate(new Action() {
-                    @Override
-                    public void run() {
-                        onSubscribe.release();
-                    }
-                });
+                .doFinally(new Action() {
+                @Override
+                public void run() {
+                    onSubscribe.release();
+                }
+            });
     }
 
     private static final class CursorLoaderOnSubscribe
@@ -79,7 +77,8 @@ final class RxCursorLoaderFlowableFactory {
         @NonNull
         private final Scheduler mScheduler;
 
-        private Handler mHandler;
+        @NonNull
+        private final Handler mHandler = new Handler(Looper.getMainLooper());
 
         private FlowableEmitter<Cursor> mEmitter;
 
@@ -91,20 +90,17 @@ final class RxCursorLoaderFlowableFactory {
                 @NonNull final Scheduler scheduler) {
             mContentResolver = resolver;
             mQuery = query;
-            this.mScheduler = scheduler;
+            mScheduler = scheduler;
         }
 
         @Override
         public void subscribe(final FlowableEmitter<Cursor> emitter) {
-            final HandlerThread handlerThread = new HandlerThread(TAG.concat(".HandlerThread"));
-            handlerThread.start();
             synchronized (mLock) {
-                mHandler = new Handler(handlerThread.getLooper());
                 mEmitter = emitter;
                 mContentResolver.registerContentObserver(mQuery.contentUri, true,
                         getResolverObserver());
+                reload();
             }
-            reload();
         }
 
         private void release() {
@@ -115,14 +111,6 @@ final class RxCursorLoaderFlowableFactory {
                 }
 
                 mEmitter = null;
-
-                if (mHandler != null) {
-                    final Looper looper = mHandler.getLooper();
-                    if (looper != null) {
-                        looper.quit();
-                    }
-                }
-                mHandler = null;
             }
         }
 
@@ -131,19 +119,19 @@ final class RxCursorLoaderFlowableFactory {
          * <p>
          * This must be called from {@link #subscribe(FlowableEmitter)} thread
          */
-        private synchronized void reload() {
+        private void reload() {
+            if (isDebugLoggingEnabled()) {
+                Log.d(TAG, mQuery.toString());
+            }
+
+            final Cursor c = mContentResolver.query(
+                mQuery.contentUri,
+                mQuery.projection,
+                mQuery.selection,
+                mQuery.selectionArgs,
+                mQuery.sortOrder);
+
             synchronized (mLock) {
-                if (isDebugLoggingEnabled()) {
-                    Log.d(TAG, mQuery.toString());
-                }
-
-                final Cursor c = mContentResolver.query(
-                        mQuery.contentUri,
-                        mQuery.projection,
-                        mQuery.selection,
-                        mQuery.selectionArgs,
-                        mQuery.sortOrder);
-
                 if (mEmitter != null && !mEmitter.isCancelled()) {
                     if (c != null) {
                         mEmitter.onNext(c);
